@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ class GitHubIngestionResult:
 class GitHubService:
     def __init__(self):
         self._token_cache: Dict[str, Tuple[str, float]] = {}  # cache_key -> (token, expires_at_timestamp)
+        self._refresh_locks: Dict[str, asyncio.Lock] = {}
 
     def generate_app_jwt(self) -> str:
         """Mints an RS256 JWT using the GitHub App's private key."""
@@ -78,25 +80,31 @@ class GitHubService:
                 raise GitHubAuthError(f"OAuth code exchange failed: {data.get('error_description', data['error'])}")
             return data
 
-    async def refresh_user_access_token(self, refresh_token: str) -> Dict[str, str]:
+    async def refresh_user_access_token(self, refresh_token: str, session_id: Optional[str] = None) -> Dict[str, str]:
         """
         Refreshes an expiring user-to-server access token using GitHub's refresh_token grant.
+        Uses an asyncio.Lock per session to guarantee concurrency safety during simultaneous requests.
         """
-        url = "https://github.com/login/oauth/access_token"
-        headers = {"Accept": "application/json"}
-        payload = {
-            "client_id": settings.GITHUB_APP_CLIENT_ID,
-            "client_secret": settings.GITHUB_APP_CLIENT_SECRET,
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            if "error" in data:
-                raise GitHubReauthorizationRequiredError(f"User token refresh failed: {data.get('error_description', data['error'])}")
-            return data
+        lock_key = session_id or "global"
+        if lock_key not in self._refresh_locks:
+            self._refresh_locks[lock_key] = asyncio.Lock()
+
+        async with self._refresh_locks[lock_key]:
+            url = "https://github.com/login/oauth/access_token"
+            headers = {"Accept": "application/json"}
+            payload = {
+                "client_id": settings.GITHUB_APP_CLIENT_ID,
+                "client_secret": settings.GITHUB_APP_CLIENT_SECRET,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                if "error" in data:
+                    raise GitHubReauthorizationRequiredError(f"User token refresh failed: {data.get('error_description', data['error'])}")
+                return data
 
     async def verify_installation_ownership(self, user_access_token: str, installation_id: int) -> bool:
         """

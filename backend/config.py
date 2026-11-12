@@ -9,7 +9,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Security & Sessions
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "canvello-default-dev-secret-key-32b!")
     CANVELLO_ENCRYPTION_KEY: str = os.getenv("CANVELLO_ENCRYPTION_KEY", "canvello-32-byte-default-test-key!!")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
     SESSION_COOKIE_NAME: str = "canvello_session"
     SESSION_MAX_AGE_SECONDS: int = 86400  # 24 hours
     CSRF_COOKIE_NAME: str = "canvello_csrf"

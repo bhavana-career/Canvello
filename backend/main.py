@@ -95,8 +95,18 @@ def verify_csrf(
     session: dict = Depends(get_current_user_session),
     x_canvello_csrf: Optional[str] = Header(None, alias="X-Canvello-CSRF")
 ):
-    """Enforces CSRF token check on mutation requests."""
+    """Enforces CSRF token check and Origin validation on mutation requests."""
     if request.method in ["POST", "PUT", "DELETE", "PATCH"]:
+        # 1. Validate Origin header if present
+        origin = request.headers.get("origin")
+        allowed_origins = [settings.FRONTEND_URL, "http://localhost:3000", "http://127.0.0.1:3000"]
+        if origin and origin not in allowed_origins:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Origin validation failed: Untrusted origin '{origin}'"
+            )
+
+        # 2. Validate CSRF Token
         expected_csrf = session.get("csrf_secret")
         if not expected_csrf or not x_canvello_csrf or not secrets.compare_digest(x_canvello_csrf, expected_csrf):
             raise HTTPException(

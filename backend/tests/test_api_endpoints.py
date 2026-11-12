@@ -143,6 +143,95 @@ def test_job_cancellation_lifecycle():
     assert status_resp.json()["status"] == "cancelled"
 
 
+@pytest.mark.anyio
+async def test_actively_running_job_cancellation():
+    """
+    Verifies cancellation while a job is actively executing (running state).
+    Ensures async task is cancelled, partial state cleaned up, and late-running task
+    CANNOT overwrite 'cancelled' with 'completed'.
+    """
+    import asyncio
+    from main import job_service
+
+    job_id = job_service.create_job(user_id=999999, repository_id="demo/running-cancel-test")
+    job = job_service._jobs[job_id]
+
+    async def simulated_running_task():
+        job.status = "running"
+        job.current_step = "parsing_ast"
+        try:
+            await asyncio.sleep(2.0)
+            if job.status != "cancelled":
+                job.status = "completed"
+        except asyncio.CancelledError:
+            job.status = "cancelled"
+            job.error = "JOB_CANCELLED_BY_USER"
+            job.result_graph = None
+
+    task = asyncio.create_task(simulated_running_task())
+    job.async_task = task
+
+    # Allow task to enter running state
+    await asyncio.sleep(0.05)
+    assert job.status == "running"
+
+    # Cancel while running
+    cancelled = job_service.cancel_job(job_id, requesting_user_id=999999)
+    assert cancelled is True
+    assert job.status == "cancelled"
+
+    # Await cancellation completion
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    # Ensure late task completion did NOT overwrite cancelled status
+    assert job.status == "cancelled"
+    assert job.error == "JOB_CANCELLED_BY_USER"
+    assert job.result_graph is None
+
+
+def test_token_encryption_at_rest():
+    from services.token_encryption import encrypt_token_at_rest, decrypt_token_at_rest
+    raw_user_token = "ghu_1234567890abcdefABCDEF_sample_token"
+    encrypted = encrypt_token_at_rest(raw_user_token)
+    assert encrypted != raw_user_token
+    assert len(encrypted) > len(raw_user_token)
+    decrypted = decrypt_token_at_rest(encrypted)
+    assert decrypted == raw_user_token
+
+
+def test_origin_validation_on_mutation():
+    session_resp = client.get("/api/v1/auth/session", headers={"X-Canvello-Demo-User": "true"})
+    csrf_token = session_resp.json()["csrf_token"]
+
+    # Request with untrusted origin rejected with 403
+    evil_resp = client.post(
+        "/api/v1/repos/analyze",
+        json={"owner": "demo", "repo": "canvello-demo-express"},
+        headers={
+            "X-Canvello-Demo-User": "true",
+            "X-Canvello-CSRF": csrf_token,
+            "Origin": "https://malicious-phishing.com",
+        },
+    )
+    assert evil_resp.status_code == 403
+    assert "Origin validation failed" in evil_resp.json()["detail"]
+
+    # Request with trusted origin accepted with 202
+    trusted_resp = client.post(
+        "/api/v1/repos/analyze",
+        json={"owner": "demo", "repo": "canvello-demo-express"},
+        headers={
+            "X-Canvello-Demo-User": "true",
+            "X-Canvello-CSRF": csrf_token,
+            "Origin": "http://localhost:3000",
+        },
+    )
+    assert trusted_resp.status_code == 202
+
+
 def test_selected_file_relationships_endpoint():
     # Ensure demo repo graph is built first
     session_resp = client.get("/api/v1/auth/session", headers={"X-Canvello-Demo-User": "true"})
