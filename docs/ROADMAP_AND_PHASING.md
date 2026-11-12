@@ -67,21 +67,35 @@ To consider **Phase 1: Project Audit and Architecture Realignment** officially c
 
 ---
 
-## 3. Recommended Starting Point for Phase 2: Repository Connection and Analysis
+## 3. Scope & Deliverables for Phase 2: Repository Connection and Analysis
 
-Upon formal approval of Phase 1, **Phase 2 (Repository Connection and Analysis)** will begin with the following concrete milestones:
+Phase 2 focuses exclusively on the repository connection, file ingestion, deterministic parsing, and hybrid architecture graph generation. Phase 2 produces validated hierarchical graph JSON; interactive 3D WebGL visualization, camera controls, and node physics belong strictly to Phase 3.
 
-1. **Repository & Directory Scaffolding**:
-   - Initialize Git tracking in `c:\Users\bhava\Downloads\hackyhackathon`.
-   - Establish `/web` (Next.js 14 frontend skeleton) and `/backend` (FastAPI Python 3.11 service).
-2. **GitHub App Connection Service**:
-   - Implement read-only GitHub repository fetching with pre-flight size and file-count eligibility checks using GitHub App installation tokens.
-3. **Deterministic AST Parsing Engine**:
-   - Integrate Tree-sitter parsers for TypeScript/JavaScript and Python.
-   - Implement import and export extraction with relative path and `tsconfig.json` alias resolution.
-4. **NetworkX Architecture Graph Service**:
-   - Implement the Hybrid Architecture Grouping algorithm to construct clusters, internal nodes, and boundary conduits.
-5. **Purpose-Built Demo Repository**:
-   - Create a clean 35-file reference TypeScript/Node.js/Express repository with Jest test suite to serve as the deterministic verification target.
-6. **Milestone Checkpoint 2**:
-   - Ingest the demo repository and verify that the backend produces a structured, deterministic JSON architecture graph matching all specification criteria.
+### Phase 2 Core Milestones:
+1. **GitHub App Connection Service**:
+   - GitHub App installation flow and repository selection ("All" vs "Selected").
+   - Server-side installation access token management via RS256 JWT exchange (1h TTL).
+   - Opaque, encrypted HTTP-only session cookies in the browser.
+   - Read-only `Metadata` and `Contents` permissions (zero write access).
+   - Immutable snapshot consistency: resolving branch heads to a fixed commit SHA.
+   - Paginated Git Data Trees API retrieval with rate-limit tracking (`X-RateLimit-Remaining`).
+   - Exclusion filters: binaries, symlinks, submodules, lockfiles, and generated build artifacts.
+2. **Deterministic AST Parsing Engine (Tree-sitter)**:
+   - Grammars for TypeScript/JavaScript and Python.
+   - Extracts imports, exports, functions, classes, and decorators.
+   - Resolves relative paths (`./`, `../`) and `tsconfig.json` paths (`@/*`).
+   - Explicitly flags dynamic imports (`import(...)`) and unsupported resolution patterns as unresolved.
+   - Measurable parser telemetry: parsed syntax count, extracted imports, resolved dependencies, and unresolved/ambiguous dependencies.
+3. **Hybrid Architecture Grouping & NetworkX Graph Engine**:
+   - Deterministic classification precedence: explicit folder name > naming convention > AST declaration > import pattern.
+   - Fallback `Unclassified` category for ambiguous components. Inferred roles labeled with evidence tags.
+   - NetworkX graph generation: Level 1 architectural clusters, Level 2 internal nodes, and Level 3 boundary ports/conduits.
+4. **Reference Demo & Edge-Case Test Fixtures**:
+   - Curated 35-file reference TypeScript + Express + SQLite repository (`canvello-demo-express`) with passing Jest tests.
+   - Synthetic test fixtures: circular dependencies, unresolved imports, dynamic imports, malformed source files, duplicate filenames across directories, deep folder hierarchies, and Python relative imports.
+5. **Minimal Development & Inspection UI**:
+   - Minimal Next.js dev bench to test GitHub connection, select repositories, trigger parsing, and inspect the raw hierarchical graph JSON and telemetry tables. (No 3D canvas or node physics; reserved for Phase 3).
+6. **Dependency Hardening & Security Standards**:
+   - Pinned stable package versions with lockfiles.
+   - Automated vulnerability scanning (`pip-audit`, `npm audit`).
+   - Policy: Zero unresolved CRITICAL vulnerabilities; explicit documentation and review of any HIGH findings.
