@@ -7,6 +7,26 @@ import jwt
 from config import settings
 
 
+class GitHubAuthError(Exception):
+    """Base exception for GitHub API authentication/authorization failures."""
+    pass
+
+
+class GitHubInstallationRevokedError(GitHubAuthError):
+    """Raised when an installation ID has been deleted or uninstalled."""
+    pass
+
+
+class GitHubRateLimitExhaustedError(GitHubAuthError):
+    """Raised when GitHub API rate limits have been completely exhausted."""
+    pass
+
+
+class GitHubReauthorizationRequiredError(GitHubAuthError):
+    """Raised when user credentials/tokens are expired, revoked, or insufficient."""
+    pass
+
+
 class GitHubIngestionResult:
     def __init__(self):
         self.commit_sha: str = ""
@@ -38,6 +58,71 @@ class GitHubService:
         }
         return jwt.encode(payload, settings.GITHUB_APP_PRIVATE_KEY, algorithm="RS256")
 
+    async def exchange_oauth_code_for_user_token(self, code: str) -> Dict[str, str]:
+        """
+        Exchanges GitHub OAuth authorization code for a user access token and optional refresh token.
+        """
+        url = "https://github.com/login/oauth/access_token"
+        headers = {"Accept": "application/json"}
+        payload = {
+            "client_id": settings.GITHUB_APP_CLIENT_ID,
+            "client_secret": settings.GITHUB_APP_CLIENT_SECRET,
+            "code": code,
+            "redirect_uri": settings.GITHUB_APP_CALLBACK_URL,
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            if "error" in data:
+                raise GitHubAuthError(f"OAuth code exchange failed: {data.get('error_description', data['error'])}")
+            return data
+
+    async def refresh_user_access_token(self, refresh_token: str) -> Dict[str, str]:
+        """
+        Refreshes an expiring user-to-server access token using GitHub's refresh_token grant.
+        """
+        url = "https://github.com/login/oauth/access_token"
+        headers = {"Accept": "application/json"}
+        payload = {
+            "client_id": settings.GITHUB_APP_CLIENT_ID,
+            "client_secret": settings.GITHUB_APP_CLIENT_SECRET,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            if "error" in data:
+                raise GitHubReauthorizationRequiredError(f"User token refresh failed: {data.get('error_description', data['error'])}")
+            return data
+
+    async def verify_installation_ownership(self, user_access_token: str, installation_id: int) -> bool:
+        """
+        Verifies that the provided installation ID is owned by or authorized for the authenticated user.
+        Queries /user/installations with user Bearer token to prevent cross-account installation hijacking.
+        """
+        url = "https://api.github.com/user/installations"
+        headers = {
+            "Authorization": f"Bearer {user_access_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 401:
+                raise GitHubReauthorizationRequiredError("User access token invalid or expired during installation verification")
+            if resp.status_code != 200:
+                return False
+
+            data = resp.json()
+            installations = data.get("installations", [])
+            for inst in installations:
+                if inst.get("id") == installation_id:
+                    return True
+        return False
+
     async def get_installation_access_token(self, installation_id: int, repository_target: Optional[str] = None) -> str:
         """
         Retrieves or renews a scope-aware installation access token.
@@ -66,15 +151,18 @@ class GitHubService:
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, headers=headers, json=body)
-            if resp.status_code == 404 or resp.status_code == 401:
+            if resp.headers.get("x-ratelimit-remaining") == "0":
+                raise GitHubRateLimitExhaustedError("GITHUB_RATE_LIMIT_EXHAUSTED: Rate limit remaining is 0")
+
+            if resp.status_code in [404, 401]:
                 # Independent verification before declaring revoked
                 verify_resp = await client.get(
                     f"https://api.github.com/app/installations/{installation_id}",
                     headers=headers
                 )
                 if verify_resp.status_code in [404, 401]:
-                    raise RuntimeError(f"INSTALLATION_REVOKED: Installation {installation_id} is deleted or inaccessible")
-                raise RuntimeError(f"GITHUB_AUTH_FAILED: {resp.text}")
+                    raise GitHubInstallationRevokedError(f"INSTALLATION_REVOKED: Installation {installation_id} is deleted or inaccessible")
+                raise GitHubAuthError(f"GITHUB_AUTH_FAILED: {resp.text}")
 
             resp.raise_for_status()
             data = resp.json()

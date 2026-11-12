@@ -35,6 +35,8 @@ class FileNode(BaseModel):
     inferred_role: str = "Unclassified"
     is_inferred: bool = True
     evidence_tags: List[str] = Field(default_factory=list)
+    direct_dependency_count: int = 0
+    direct_dependent_count: int = 0
 
 
 class ExternalPackageNode(BaseModel):
@@ -133,3 +135,41 @@ class ArchitectureGraphResponse(BaseModel):
     nodes: List[AnyGraphNode]
     edges: List[DependencyEdge]
     boundary_ports: List[BoundaryPort]
+
+
+class DerivedRelationship(BaseModel):
+    """
+    Bounded, evidence-backed multi-hop indirect relationship between files.
+    Always backed by concrete direct dependency edges.
+    """
+    source_id: str = Field(..., description="Source file ID")
+    target_id: str = Field(..., description="Target file ID")
+    hop_count: int = Field(..., ge=2, le=3, description="Distance in hops (2 or 3)")
+    intermediate_file_ids: List[str] = Field(..., description="Intermediate file IDs traversed")
+    full_path: List[str] = Field(..., description="Ordered file path from source to target")
+    underlying_direct_edge_ids: List[str] = Field(..., description="Concrete direct DependencyEdge IDs for each hop")
+
+
+class FileRelationshipsResponse(BaseModel):
+    """
+    Selected-file dependency and dependent model.
+    Authoritatively distinguishes direct AST edges from derived indirect reachability.
+    """
+    selected_file_id: str
+    cluster_id: str
+    direct_dependencies: List[DependencyEdge] = Field(
+        default_factory=list,
+        description="Direct imports made by this file (outgoing AST edges)"
+    )
+    direct_dependents: List[DependencyEdge] = Field(
+        default_factory=list,
+        description="Files directly importing this file (incoming AST edges)"
+    )
+    derived_indirect_dependencies: List[DerivedRelationship] = Field(
+        default_factory=list,
+        description="Files reachable through 2-3 hops with evidence edge IDs"
+    )
+    derived_indirect_dependents: List[DerivedRelationship] = Field(
+        default_factory=list,
+        description="Files reaching this file through 2-3 hops with evidence edge IDs"
+    )

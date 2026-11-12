@@ -103,7 +103,7 @@ class JobService:
         local_dir_override: Optional[str] = None
     ):
         job = self._jobs.get(job_id)
-        if not job:
+        if not job or job.status == "cancelled":
             return
 
         job.status = "running"
@@ -121,6 +121,10 @@ class JobService:
             else:
                 ingest_res = await self.github_service.ingest_repository(owner, repo, ref=ref, token=installation_token)
 
+            if job.status == "cancelled":
+                job.result_graph = None
+                return
+
             job.current_step = "parsing_ast"
             job.progress_percentage = 45
             job.last_heartbeat = time.time()
@@ -129,7 +133,14 @@ class JobService:
             # 2. Parse AST using Tree-sitter
             parsed_files = {}
             for path, raw_bytes in ingest_res.source_files.items():
+                if job.status == "cancelled":
+                    job.result_graph = None
+                    return
                 parsed_files[path] = self.parser_service.parse_file(path, raw_bytes)
+
+            if job.status == "cancelled":
+                job.result_graph = None
+                return
 
             job.current_step = "building_graph"
             job.progress_percentage = 75
@@ -143,6 +154,10 @@ class JobService:
             clusters, conduits, nodes, edges, ports, telemetry = self.graph_service.build_architecture_graph(
                 parsed_files, resolver, ingest_res.config_files
             )
+
+            if job.status == "cancelled":
+                job.result_graph = None
+                return
 
             telemetry.parse_duration_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -158,6 +173,10 @@ class JobService:
                 language_breakdown=ingest_res.language_breakdown,
                 truncation_reason=ingest_res.truncation_reason,
             )
+
+            if job.status == "cancelled":
+                job.result_graph = None
+                return
 
             job.result_graph = ArchitectureGraphResponse(
                 metadata=metadata,
@@ -176,7 +195,8 @@ class JobService:
 
         except asyncio.CancelledError:
             job.status = "cancelled"
-            job.error = "JOB_TASK_CANCELLED"
+            job.error = "JOB_CANCELLED_BY_USER"
+            job.result_graph = None
             job.updated_at = datetime.now(timezone.utc)
         except Exception as e:
             job.status = "failed"

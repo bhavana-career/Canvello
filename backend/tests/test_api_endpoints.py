@@ -115,3 +115,110 @@ def test_job_authorization_anti_enumeration():
     )
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Job not found"
+
+
+def test_job_cancellation_lifecycle():
+    from main import job_service
+    # 1. Acquire CSRF
+    session_resp = client.get("/api/v1/auth/session", headers={"X-Canvello-Demo-User": "true"})
+    csrf_token = session_resp.json()["csrf_token"]
+
+    # 2. Create job in queued state
+    job_id = job_service.create_job(user_id=999999, repository_id="demo/cancel-test")
+    assert job_service._jobs[job_id].status == "queued"
+
+    # 3. Cancel queued job
+    cancel_resp = client.post(
+        f"/api/v1/jobs/{job_id}/cancel",
+        headers={
+            "X-Canvello-Demo-User": "true",
+            "X-Canvello-CSRF": csrf_token,
+        },
+    )
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["status"] == "cancelled"
+
+    # Verify status is cancelled and cannot complete
+    status_resp = client.get(f"/api/v1/jobs/{job_id}", headers={"X-Canvello-Demo-User": "true"})
+    assert status_resp.json()["status"] == "cancelled"
+
+
+def test_selected_file_relationships_endpoint():
+    # Ensure demo repo graph is built first
+    session_resp = client.get("/api/v1/auth/session", headers={"X-Canvello-Demo-User": "true"})
+    csrf_token = session_resp.json()["csrf_token"]
+
+    analyze_resp = client.post(
+        "/api/v1/repos/analyze",
+        json={"owner": "demo", "repo": "canvello-demo-express"},
+        headers={"X-Canvello-Demo-User": "true", "X-Canvello-CSRF": csrf_token},
+    )
+    job_id = analyze_resp.json()["job_id"]
+    import time
+    for _ in range(20):
+        poll = client.get(f"/api/v1/jobs/{job_id}", headers={"X-Canvello-Demo-User": "true"}).json()
+        if poll["status"] == "completed":
+            break
+        time.sleep(0.1)
+
+    # Test selecting auth.controller.ts
+    rel_resp = client.get(
+        "/api/v1/repos/demo/canvello-demo-express/relationships?file_id=src/controllers/auth.controller.ts",
+        headers={"X-Canvello-Demo-User": "true"},
+    )
+    assert rel_resp.status_code == 200
+    rel_data = rel_resp.json()
+
+    assert rel_data["selected_file_id"] == "src/controllers/auth.controller.ts"
+    assert rel_data["cluster_id"] == "controllers"
+
+    # Direct dependencies (auth.controller imports auth.service, logger, validator)
+    direct_dep_targets = [d["target"] for d in rel_data["direct_dependencies"]]
+    assert "src/services/auth.service.ts" in direct_dep_targets
+
+    # Direct dependents (auth.routes imports auth.controller)
+    direct_dependent_sources = [d["source"] for d in rel_data["direct_dependents"]]
+    assert "src/routes/auth.routes.ts" in direct_dependent_sources
+
+    # Derived indirect dependencies (e.g. auth.controller -> auth.service -> user.repository)
+    derived_deps = rel_data["derived_indirect_dependencies"]
+    assert len(derived_deps) > 0
+    # Verify underlying direct edge IDs exist for derived relationship
+    first_derived = derived_deps[0]
+    assert first_derived["hop_count"] >= 2
+    assert len(first_derived["underlying_direct_edge_ids"]) >= 2
+    assert len(first_derived["full_path"]) >= 3
+
+
+def test_oauth_state_validation():
+    # 1. Login sets cookie and redirect
+    login_resp = client.get("/api/v1/auth/github/login", follow_redirects=False)
+    assert login_resp.status_code == 307
+    assert "canvello_oauth_state" in login_resp.cookies
+    state = login_resp.cookies["canvello_oauth_state"]
+
+    # 2. Callback with mismatched state rejected
+    mismatch_resp = client.get(
+        "/api/v1/auth/github/callback?code=test_code&state=invalid_state_token",
+        cookies={"canvello_oauth_state": state},
+    )
+    assert mismatch_resp.status_code == 400
+    assert "state mismatch" in mismatch_resp.json()["detail"]
+
+    # 3. Valid callback succeeds and clears cookie
+    valid_resp = client.get(
+        f"/api/v1/auth/github/callback?code=test_code&state={state}",
+        cookies={"canvello_oauth_state": state},
+        follow_redirects=False,
+    )
+    assert valid_resp.status_code == 307
+    assert "canvello_session" in valid_resp.cookies
+
+    # 4. State is single-use: replay attack rejected
+    replay_resp = client.get(
+        f"/api/v1/auth/github/callback?code=test_code&state={state}",
+        cookies={"canvello_oauth_state": state},
+    )
+    assert replay_resp.status_code == 400
+    assert "expired or reused" in replay_resp.json()["detail"]
+

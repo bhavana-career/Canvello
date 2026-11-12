@@ -8,8 +8,10 @@ from schemas.graph import (
     BoundaryPort,
     ClusterGroup,
     DependencyEdge,
+    DerivedRelationship,
     ExternalPackageNode,
     FileNode,
+    FileRelationshipsResponse,
     NodeType,
     ResolutionType,
     UnresolvedTargetNode,
@@ -121,6 +123,12 @@ class GraphService:
                     telemetry.resolved_dependencies_count += 1
                 else:
                     telemetry.unresolved_dependencies_count += 1
+
+        # Populate direct dependency and dependent counts on each FileNode
+        for nid, node in nodes_map.items():
+            if isinstance(node, FileNode):
+                node.direct_dependency_count = graph.out_degree(nid) if graph.has_node(nid) else 0
+                node.direct_dependent_count = graph.in_degree(nid) if graph.has_node(nid) else 0
 
         # 3. Build Level 1 Clusters
         clusters_list: List[ClusterGroup] = []
@@ -283,6 +291,126 @@ class GraphService:
         all_ports: List[BoundaryPort] = list(ports_map.values())
 
         return clusters_list, all_conduits, all_nodes, edges_list, all_ports, telemetry
+
+    def extract_file_relationships(
+        self,
+        file_id: str,
+        nodes: List[AnyGraphNode],
+        edges: List[DependencyEdge],
+        max_depth: int = 3,
+        max_paths: int = 15,
+    ) -> FileRelationshipsResponse:
+        """
+        Computes the file-centric dependency and dependent model for a selected file:
+        - Direct dependencies (outgoing AST imports)
+        - Direct dependents (incoming AST imports)
+        - Bounded derived indirect dependencies (depth 2..3) with full edge ID trace
+        - Bounded derived indirect dependents (depth 2..3) with full edge ID trace
+        """
+        nodes_dict = {n.id: n for n in nodes}
+        if file_id not in nodes_dict:
+            raise ValueError(f"File '{file_id}' not found in architecture graph")
+
+        selected_node = nodes_dict[file_id]
+        cluster_id = getattr(selected_node, "cluster_id", "unclassified")
+
+        # 1. Direct dependencies (outgoing) and direct dependents (incoming)
+        direct_deps: List[DependencyEdge] = []
+        direct_dependents: List[DependencyEdge] = []
+        edge_lookup: Dict[Tuple[str, str], List[str]] = {}
+
+        for edge in edges:
+            edge_lookup.setdefault((edge.source, edge.target), []).append(edge.id)
+            if edge.source == file_id:
+                direct_deps.append(edge)
+            if edge.target == file_id:
+                direct_dependents.append(edge)
+
+        # 2. Reconstruct internal graph for bounded indirect path derivation
+        graph = nx.DiGraph()
+        for n in nodes:
+            graph.add_node(n.id)
+        for edge in edges:
+            graph.add_edge(edge.source, edge.target, edge_id=edge.id)
+
+        # Internal source subgraph (exclude external packages as intermediaries)
+        internal_ids = [
+            n.id for n in nodes
+            if getattr(n, "node_type", None) in (NodeType.SOURCE_FILE, NodeType.CONFIGURATION)
+        ]
+        internal_subgraph = graph.subgraph(internal_ids)
+
+        derived_indirect_deps: List[DerivedRelationship] = []
+        derived_indirect_deps_targets: Set[str] = set()
+
+        if file_id in internal_subgraph:
+            # Shortest paths from selected file (forward reachability)
+            try:
+                lengths = nx.single_source_shortest_path_length(internal_subgraph, file_id, cutoff=max_depth)
+                for dest, dist in sorted(lengths.items(), key=lambda x: (x[1], x[0])):
+                    if dist >= 2:
+                        path = nx.shortest_path(internal_subgraph, file_id, dest)
+                        intermediates = path[1:-1]
+                        edge_ids = []
+                        for i in range(len(path) - 1):
+                            u, v = path[i], path[i + 1]
+                            edge_ids.extend(edge_lookup.get((u, v), []))
+
+                        derived_indirect_deps.append(
+                            DerivedRelationship(
+                                source_id=file_id,
+                                target_id=dest,
+                                hop_count=dist,
+                                intermediate_file_ids=intermediates,
+                                full_path=path,
+                                underlying_direct_edge_ids=edge_ids,
+                            )
+                        )
+                        derived_indirect_deps_targets.add(dest)
+                        if len(derived_indirect_deps) >= max_paths:
+                            break
+            except Exception:
+                pass
+
+        # 3. Derived indirect dependents (reverse reachability into selected file)
+        derived_indirect_dependents: List[DerivedRelationship] = []
+        if file_id in internal_subgraph:
+            reversed_subgraph = internal_subgraph.reverse()
+            try:
+                rev_lengths = nx.single_source_shortest_path_length(reversed_subgraph, file_id, cutoff=max_depth)
+                for src_node, dist in sorted(rev_lengths.items(), key=lambda x: (x[1], x[0])):
+                    if dist >= 2:
+                        # Path in original graph goes from src_node to file_id
+                        path = nx.shortest_path(internal_subgraph, src_node, file_id)
+                        intermediates = path[1:-1]
+                        edge_ids = []
+                        for i in range(len(path) - 1):
+                            u, v = path[i], path[i + 1]
+                            edge_ids.extend(edge_lookup.get((u, v), []))
+
+                        derived_indirect_dependents.append(
+                            DerivedRelationship(
+                                source_id=src_node,
+                                target_id=file_id,
+                                hop_count=dist,
+                                intermediate_file_ids=intermediates,
+                                full_path=path,
+                                underlying_direct_edge_ids=edge_ids,
+                            )
+                        )
+                        if len(derived_indirect_dependents) >= max_paths:
+                            break
+            except Exception:
+                pass
+
+        return FileRelationshipsResponse(
+            selected_file_id=file_id,
+            cluster_id=cluster_id,
+            direct_dependencies=direct_deps,
+            direct_dependents=direct_dependents,
+            derived_indirect_dependencies=derived_indirect_deps,
+            derived_indirect_dependents=derived_indirect_dependents,
+        )
 
     def _classify_file(self, path: str, info: ParsedFileInfo) -> Tuple[str, str, List[str]]:
         """

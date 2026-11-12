@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from config import settings
-from schemas.graph import ArchitectureGraphResponse
+from schemas.graph import ArchitectureGraphResponse, FileRelationshipsResponse
 from schemas.repository import (
     AnalyzeRepoRequest,
     JobStatusResponse,
@@ -112,12 +112,19 @@ def verify_csrf(
 import time
 
 @app.get("/api/v1/auth/github/login")
-async def github_login(response: Response):
+async def github_login():
     """Generates OAuth state with 10m TTL and redirects to GitHub OAuth."""
     state = secrets.token_hex(32)
     _oauth_states[state] = time.time() + 600
 
-    response.set_cookie(
+    oauth_url = (
+        f"https://github.com/login/oauth/authorize"
+        f"?client_id={settings.GITHUB_APP_CLIENT_ID}"
+        f"&state={state}"
+        f"&redirect_uri={settings.GITHUB_APP_CALLBACK_URL}"
+    )
+    redirect_resp = RedirectResponse(oauth_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    redirect_resp.set_cookie(
         key="canvello_oauth_state",
         value=state,
         max_age=600,
@@ -126,14 +133,7 @@ async def github_login(response: Response):
         samesite="lax",
         path="/api/v1/auth",
     )
-
-    oauth_url = (
-        f"https://github.com/login/oauth/authorize"
-        f"?client_id={settings.GITHUB_APP_CLIENT_ID}"
-        f"&state={state}"
-        f"&redirect_uri={settings.GITHUB_APP_CALLBACK_URL}"
-    )
-    return RedirectResponse(oauth_url)
+    return redirect_resp
 
 
 @app.get("/api/v1/auth/github/callback")
@@ -152,11 +152,6 @@ async def github_callback(
     if not exp or exp < time.time():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth state expired or reused")
 
-    # Clear state cookie
-    response.delete_cookie("canvello_oauth_state", path="/api/v1/auth")
-
-    # 2. Exchange code for user token
-    # (In live integration: calls GitHub; in mock testing: provisions mock session)
     user_id = 10001
     user_login = "demo-user"
 
@@ -173,7 +168,9 @@ async def github_callback(
         "expires_at": time.time() + settings.SESSION_MAX_AGE_SECONDS,
     }
 
-    response.set_cookie(
+    redirect_resp = RedirectResponse("http://localhost:3000/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    redirect_resp.delete_cookie("canvello_oauth_state", path="/api/v1/auth")
+    redirect_resp.set_cookie(
         key=settings.SESSION_COOKIE_NAME,
         value=raw_session,
         max_age=settings.SESSION_MAX_AGE_SECONDS,
@@ -183,7 +180,7 @@ async def github_callback(
         path="/",
     )
 
-    return RedirectResponse("http://localhost:3000/")
+    return redirect_resp
 
 
 @app.get("/api/v1/auth/github/setup")
@@ -191,7 +188,19 @@ async def github_setup(
     installation_id: int,
     session: dict = Depends(get_current_user_session)
 ):
-    """Verifies installation ownership against the authenticated user."""
+    """
+    Verifies installation ownership against the authenticated user.
+    If user_access_token exists, verifies against GitHub user installations.
+    """
+    user_token = session.get("user_access_token")
+    if user_token:
+        is_owned = await github_service.verify_installation_ownership(user_token, installation_id)
+        if not is_owned:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Installation ownership verification failed: User does not own installation {installation_id}"
+            )
+
     # Add verified installation to user session
     if installation_id not in session["installations"]:
         session["installations"].append(installation_id)
@@ -329,6 +338,37 @@ async def get_repository_graph(
     if not graph:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Graph not found. Please initiate analysis first.")
     return graph
+
+
+@app.get("/api/v1/repos/{owner}/{repo}/relationships", response_model=FileRelationshipsResponse)
+async def get_file_relationships(
+    owner: str,
+    repo: str,
+    file_id: str = Query(..., description="Canonical path of the selected file"),
+    session: dict = Depends(get_current_user_session)
+):
+    """
+    Retrieves the selected-file dependency and dependent model:
+    - Direct dependencies (outgoing AST edges)
+    - Direct dependents (incoming AST edges)
+    - Bounded derived indirect dependencies (depth 2..3)
+    - Bounded derived indirect dependents (depth 2..3)
+    - Tracing each derived relationship to its concrete underlying direct edge IDs.
+    """
+    repo_id = f"{owner}/{repo}"
+    graph = job_service.get_completed_graph(repo_id, session["user_id"])
+    if not graph:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Graph not found. Please initiate analysis first.")
+
+    try:
+        return job_service.graph_service.extract_file_relationships(
+            file_id=file_id,
+            nodes=graph.nodes,
+            edges=graph.edges,
+            max_depth=3,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 
 @app.get("/api/v1/health")
