@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.npm/
+
+# Next.js / Web Builds
+.next/
+out/
+dist/
+build/
+
+# Python Virtual Environments & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment Variables & Secrets (CRITICAL)
+.env
+.env*.local
+.env.development
+.env.test
+.env.production
+*.pem
+*.key
+credentials.json
+
+# Logs & Temporary Files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp/
+temp/
+scratch/
+.canvello_scratch/
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
