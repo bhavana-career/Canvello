@@ -12,11 +12,20 @@ const R3FSmokeTest = dynamic(
   }
 );
 
+const ArchitectureCanvas = dynamic(
+  () => import('@/components/ArchitectureCanvas').then((mod) => mod.ArchitectureCanvas),
+  {
+    ssr: false,
+    loading: () => <p style={{ color: '#9B82C4', padding: '2rem' }}>Loading 3D Architecture Canvas...</p>,
+  }
+);
+
 export default function HomePage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [jobStatus, setJobStatus] = useState<string | null>(null);
   const [graphData, setGraphData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
 
   const runDemoAnalysis = async () => {
     setAnalyzing(true);
@@ -88,6 +97,35 @@ export default function HomePage() {
         <h1 style={{ color: '#29152F', fontSize: '2rem', margin: '0 0 0.5rem 0' }}>Canvello Architecture Explorer</h1>
         <p style={{ color: '#9B82C4', margin: 0 }}>Phase 2: Repository Connection & Analysis Dev Bench</p>
       </header>
+
+      {/* Milestone 3.1: Interactive Level 1 Repository Overview */}
+      {graphData && (
+        <section style={{ marginBottom: '2rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+            <div>
+              <h2 style={{ margin: 0, color: '#29152F', fontSize: '1.25rem' }}>Level 1: 3D Repository Overview</h2>
+              <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: '#9B82C4' }}>
+                All-pairs collision-free layout • Demand-driven rendering (0 idle FPS) • OrbitControls navigation
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.85rem' }}>
+              <span style={{ padding: '4px 10px', background: '#E8DDF5', borderRadius: '4px', color: '#29152F' }}>
+                {graphData.clusters?.length || 0} Clusters
+              </span>
+              <span style={{ padding: '4px 10px', background: '#E8DDF5', borderRadius: '4px', color: '#29152F' }}>
+                {graphData.conduits?.length || 0} Conduits
+              </span>
+            </div>
+          </div>
+
+          <ArchitectureCanvas
+            clusters={graphData.clusters || []}
+            conduits={graphData.conduits || []}
+            selectedClusterId={selectedClusterId}
+            onSelectCluster={setSelectedClusterId}
+          />
+        </section>
+      )}
 
       {/* R3F Harness Verification Box */}
       <section style={{ marginBottom: '2rem', padding: '1.5rem', background: '#FFFFFF', border: '1px solid #E8DDF5', borderRadius: '8px' }}>
