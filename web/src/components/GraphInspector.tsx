@@ -12,10 +12,21 @@ interface ArchitectureGraph {
   boundary_ports: any[];
 }
 
-export function GraphInspector({ graph }: { graph: ArchitectureGraph }) {
-  const [selectedFileId, setSelectedFileId] = useState<string>(
+export function GraphInspector({
+  graph,
+  selectedFileId: externalSelectedFileId,
+  onSelectFile: externalOnSelectFile,
+}: {
+  graph: ArchitectureGraph;
+  selectedFileId?: string | null;
+  onSelectFile?: (fileId: string) => void;
+}) {
+  const [internalSelectedFileId, setInternalSelectedFileId] = useState<string>(
     graph?.nodes?.find((n) => n.node_type === 'source_file')?.id || ''
   );
+  const selectedFileId = externalSelectedFileId !== undefined && externalSelectedFileId !== null
+    ? externalSelectedFileId
+    : internalSelectedFileId;
   const [relationships, setRelationships] = useState<any>(null);
   const [loadingRel, setLoadingRel] = useState<boolean>(false);
 
@@ -26,7 +37,12 @@ export function GraphInspector({ graph }: { graph: ArchitectureGraph }) {
   );
 
   const fetchRelationships = async (fileId: string) => {
-    setSelectedFileId(fileId);
+    if (!fileId) return;
+    if (externalOnSelectFile) {
+      externalOnSelectFile(fileId);
+    } else {
+      setInternalSelectedFileId(fileId);
+    }
     setLoadingRel(true);
     try {
       const res = await fetch(
@@ -43,6 +59,12 @@ export function GraphInspector({ graph }: { graph: ArchitectureGraph }) {
       setLoadingRel(false);
     }
   };
+
+  React.useEffect(() => {
+    if (externalSelectedFileId) {
+      fetchRelationships(externalSelectedFileId);
+    }
+  }, [externalSelectedFileId]);
 
   return (
     <div style={{ marginTop: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>

@@ -26,6 +26,7 @@ export default function HomePage() {
   const [graphData, setGraphData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
 
   const runDemoAnalysis = async () => {
     setAnalyzing(true);
@@ -121,8 +122,18 @@ export default function HomePage() {
           <ArchitectureCanvas
             clusters={graphData.clusters || []}
             conduits={graphData.conduits || []}
+            nodes={graphData.nodes || []}
+            edges={graphData.edges || []}
+            boundary_ports={graphData.boundary_ports || []}
             selectedClusterId={selectedClusterId}
-            onSelectCluster={setSelectedClusterId}
+            selectedFileId={selectedFileId}
+            onSelectCluster={(cid) => {
+              setSelectedClusterId(cid);
+              if (!cid) setSelectedFileId(null);
+            }}
+            onSelectFile={(fid) => {
+              setSelectedFileId(fid);
+            }}
           />
         </section>
       )}
@@ -172,7 +183,13 @@ export default function HomePage() {
       </section>
 
       {/* Graph Schema Inspector */}
-      {graphData && <GraphInspector graph={graphData} />}
+      {graphData && (
+        <GraphInspector
+          graph={graphData}
+          selectedFileId={selectedFileId}
+          onSelectFile={setSelectedFileId}
+        />
+      )}
     </main>
   );
 }
